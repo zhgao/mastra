@@ -738,3 +738,90 @@ describe('createOnScorerHook owner-scoped dispatch', () => {
     expect(mockScoresStore.saveScore).not.toHaveBeenCalled();
   });
 });
+
+describe('createOnScorerHook with unregistered call-time scorers (#27579)', () => {
+  let mockScoresStore: any;
+  let mockStorage: any;
+  let mockMastra: any;
+  let onScorerHook: (hookData: any) => Promise<void>;
+
+  /** A span that is valid and not a NoOp, so scoring is not declined. */
+  const currentSpan = { id: 'step-span', traceId: 'trace-1', isValid: true };
+
+  function makeUnregisteredMastra() {
+    return {
+      getAgent: vi.fn(),
+      getAgentById: vi.fn().mockReturnValue(undefined),
+      getWorkflow: vi.fn(),
+      getWorkflowById: vi.fn(),
+      getStorage: vi.fn().mockReturnValue(mockStorage),
+      getLogger: vi.fn().mockReturnValue({ error: vi.fn(), warn: vi.fn(), trackException: vi.fn() }),
+      // The scorer is registered nowhere: an id-based lookup finds nothing.
+      getScorerById: vi.fn().mockReturnValue(undefined),
+    };
+  }
+
+  function scorerArgs(mastra: any, scorerId: string, scorerObject: any) {
+    return {
+      runId: 'run-1',
+      scorerId,
+      scorerObject,
+      input: {},
+      output: {},
+      requestContext: {},
+      entity: { id: 'test-entity' },
+      structuredOutput: false,
+      source: 'LIVE' as const,
+      entityType: 'AGENT' as const,
+      mastra,
+      ...createObservabilityContext({ currentSpan } as any),
+    } as any;
+  }
+
+  beforeEach(() => {
+    mockScoresStore = { saveScore: vi.fn().mockResolvedValue({ score: 'mocked' }) };
+    mockStorage = {
+      getStore: vi.fn((domain: string) =>
+        domain === 'scores' ? Promise.resolve(mockScoresStore) : Promise.resolve(undefined),
+      ),
+    };
+    mockMastra = makeUnregisteredMastra();
+
+    onScorerHook = createOnScorerHook(mockMastra);
+    registerHook(AvailableHooks.ON_SCORER_RUN, onScorerHook);
+  });
+
+  afterEach(() => {
+    // The emitter is module-level and never drops handlers; leaking one would
+    // cross-contaminate later suites and fail the __hookHandlerCount leak tests.
+    deregisterHook(AvailableHooks.ON_SCORER_RUN, onScorerHook);
+  });
+
+  it('runs a scorer that was passed at call time and is not registered anywhere', async () => {
+    const run = vi.fn().mockResolvedValue({ score: 0.9 });
+    const scorerObject = {
+      scorer: { id: 'calltime-scorer', name: 'Calltime Scorer', description: 'd', run },
+    };
+
+    runScorer(scorerArgs(mockMastra, 'calltime-scorer', scorerObject));
+
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(mockScoresStore.saveScore).toHaveBeenCalledTimes(1));
+    // The registry lookup cannot help here; the passed scorer must be used.
+    expect(mockMastra.getScorerById).not.toHaveBeenCalled();
+  });
+
+  it('still falls back to the registered scorer for entries without a runnable scorer', async () => {
+    const run = vi.fn().mockResolvedValue({ score: 0.8 });
+    mockMastra.getScorerById.mockReturnValue({ id: 'registered-scorer', name: 'Registered', run });
+    // Id-only entry with no `run` method, as payloads carried before #27579.
+    const scorerObject = {
+      scorer: { id: 'registered-scorer', name: 'Registered', description: 'd' },
+    };
+
+    runScorer(scorerArgs(mockMastra, 'registered-scorer', scorerObject));
+
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(mockScoresStore.saveScore).toHaveBeenCalledTimes(1));
+  });
+});
