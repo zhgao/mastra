@@ -53,12 +53,16 @@ export class UpstashTransport extends LoggerTransport {
     this.logBuffer = [];
     this.lastFlush = Date.now();
 
-    // Start flush interval
+    // Start flush interval. Unref it so an idle transport never blocks a natural
+    // process exit; destroy()/flush explicitly when delivery must complete first.
     this.flushIntervalId = setInterval(() => {
       this._flush().catch(err => {
         console.error('Error flushing logs to Upstash:', err);
       });
     }, this.flushInterval);
+    if (this.flushIntervalId.unref) {
+      this.flushIntervalId.unref();
+    }
   }
 
   private async executeUpstashCommands(commands: any[][]): Promise<any> {
