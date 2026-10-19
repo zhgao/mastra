@@ -92,8 +92,12 @@ export class HttpTransport extends LoggerTransport {
     this.logBuffer = [];
     this.lastFlush = Date.now();
 
-    // Start flush interval
+    // Start flush interval. Unref it so an idle transport never blocks a natural
+    // process exit; destroy()/flush explicitly when delivery must complete first.
     this.flushIntervalId = setInterval(() => this.requestFlush(), this.flushInterval);
+    if (this.flushIntervalId.unref) {
+      this.flushIntervalId.unref();
+    }
   }
 
   private async makeHttpRequest(data: any): Promise<Response> {
