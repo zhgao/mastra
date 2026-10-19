@@ -20,6 +20,24 @@ export function hashToUnitInterval(key: string): number {
   return Number(digest.readUIntBE(0, 6)) / 2 ** 48;
 }
 
+/**
+ * Runtime-only association between a dispatched hook payload and the resolved
+ * scorer entry `runScorer` was called with. Kept in a WeakMap — like the owner
+ * token in `../hooks/scorer-owner` — so the public hook payload stays
+ * serializable and external subscribers never see the scorer instance.
+ *
+ * `createOnScorerHook` reads this to run scorers that were supplied at call
+ * time or via `defaultOptions.scorers`: those are never registered on the
+ * agent or Mastra, so re-resolving them by id would fail with
+ * MASTRA_SCORER_NOT_FOUND and the score would be silently dropped (#27579).
+ */
+const scorerEntryByHookInput = new WeakMap<ScoringHookInput, MastraScorerEntry>();
+
+/** @internal */
+export function getScorerEntryForHookInput(input: ScoringHookInput): MastraScorerEntry | undefined {
+  return scorerEntryByHookInput.get(input);
+}
+
 export function runScorer({
   runId,
   scorerId,
@@ -145,5 +163,6 @@ export function runScorer({
   };
 
   setScorerHookOwner(payload, mastra);
+  scorerEntryByHookInput.set(payload, scorerObject);
   executeHook(AvailableHooks.ON_SCORER_RUN, payload);
 }
