@@ -1,5 +1,6 @@
 import { ErrorCategory, ErrorDomain, MastraError } from '../error';
 import { extractTrajectory, saveScorePayloadSchema } from '../evals';
+import { getScorerEntryForHookInput } from '../evals/hooks';
 import type { ScoringHookInput } from '../evals/types';
 import { isScorerHookForMastra } from '../hooks/scorer-owner';
 import type { Mastra } from '../mastra';
@@ -42,7 +43,17 @@ export function createOnScorerHook(mastra: Mastra) {
     }
 
     try {
-      const scorerToUse = await findScorer(mastra, entityId, entityType, scorerId);
+      // Prefer the scorer entry `runScorer` was actually called with. Scorers
+      // supplied at call time or via `defaultOptions.scorers` are never
+      // registered on the agent or Mastra, so the id-based lookup below cannot
+      // find them and the score would be silently dropped (#27579). Entries
+      // without a runnable scorer (e.g. id-only stubs) fall through to the
+      // registry lookup.
+      const runtimeEntry = getScorerEntryForHookInput(hookData);
+      const scorerToUse =
+        runtimeEntry?.scorer && typeof runtimeEntry.scorer.run === 'function'
+          ? runtimeEntry
+          : await findScorer(mastra, entityId, entityType, scorerId);
 
       if (!scorerToUse) {
         throw new MastraError({
